@@ -43,13 +43,12 @@ __version__ = "0.1.0"
 from quantum_jit.core import qjit, QuantumJITCompiler
 
 # Export pattern detection for advanced usage
-from quantum_jit.pattern_detection.base_detector import BasePatternDetector
-from quantum_jit.pattern_detection.common_patterns import (
+from quantum_jit.patterns.common_patterns import (
     detect_matrix_multiply,
     detect_fourier_transform, 
     detect_search
 )
-from quantum_jit.pattern_detection.function_analyzer import FunctionAnalyzer
+from quantum_jit.patterns.function_analyzer import FunctionAnalyzer
 
 # Export circuit generation for advanced usage
 from quantum_jit.circuit_generation.circuit_generator import QuantumCircuitGenerator
