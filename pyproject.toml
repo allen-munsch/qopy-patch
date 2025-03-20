@@ -1,0 +1,47 @@
+[project]
+name = "quantum-copy-and-patch-jit"
+version = "0.1.0"
+description = "An example library for quantum copy and patch jit"
+authors = [
+ {name = "James Munsch", email = "james.a.munsch@gmail.com"},
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.2.0",
+    "qiskit>=1.4.0",
+    "qiskit-aer>=0.17.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=4.1.0",
+]
+
+test = [
+    "pytest>=8.3.0",
+    "pytest-cov>=4.1.0",
+]
+
+all = [
+    "numpy>=2.2.0",
+    "qiskit>=1.4.0",
+    "qiskit-aer>=0.17.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=4.1.0",
+    "matplotlib>=3.10.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
