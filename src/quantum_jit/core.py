@@ -23,6 +23,7 @@ from quantum_jit.implementations.optimization import create_quantum_optimization
 from quantum_jit.implementations.binary_function import create_quantum_binary_evaluation
 from quantum_jit.implementations.selector import create_quantum_implementation
 from quantum_jit.decision.decision_maker import compare_results
+from quantum_jit.visualization import call_graph, pattern_dashboard, performance_tracker
 
 
 # Helper functions
@@ -271,6 +272,61 @@ class QuantumJITCompiler:
                 traceback.print_exc()
             
             return None
+
+    def visualize_acceleration(self, output_dir='./quantum_viz'):
+        """Generate visualizations of quantum acceleration."""
+        import os
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+            
+        # Prepare data for visualizations
+        pattern_data = []
+        performance_history = []
+        function_registry = {}
+        
+        for func_id, quantum_func in self.quantum_implementations.items():
+            if hasattr(quantum_func, '__wrapped__'):
+                func_name = quantum_func.__wrapped__.__name__
+                function_registry[func_id] = func_name
+                
+                # Get pattern data
+                if func_id in self.performance_data:
+                    perf_data = self.performance_data[func_id]
+                    speedup = perf_data.get('speedup', 0)
+                    
+                    # Get pattern information
+                    pattern_info = self._get_pattern_info(func_id)
+                    
+                    if pattern_info:
+                        pattern_data.append({
+                            'function': func_name,
+                            'pattern': pattern_info['pattern'],
+                            'confidence': pattern_info['confidence'],
+                            'speedup': speedup
+                        })
+                        
+                        # Add to performance history
+                        performance_history.append({
+                            'timestamp': pattern_info['timestamp'],
+                            'function': func_name,
+                            'classical_time': perf_data.get('classical_time', 0),
+                            'quantum_time': perf_data.get('quantum_time', 0),
+                            'speedup': speedup
+                        })
+        
+        # Generate visualizations
+        call_graph.create_call_graph(
+            self.quantum_implementations, 
+            self.performance_data,
+            function_registry
+        )
+        
+        if pattern_data:
+            pattern_dashboard.visualize_patterns(pattern_data)
+            
+        if performance_history:
+            performance_tracker.visualize_performance_timeline(performance_history)
+
 
 
 # Simplified API
