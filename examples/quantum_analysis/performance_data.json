@@ -1,0 +1,9 @@
+{
+  "optimize_binary": {
+    "classical_time": 0.000324249267578125,
+    "quantum_time": 0.14358234405517578,
+    "speedup": 0.002258280916862052,
+    "timestamp": 1742442034.2646348,
+    "correct": true
+  }
+}

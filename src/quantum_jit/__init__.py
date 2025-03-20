@@ -40,7 +40,7 @@ Example usage:
 __version__ = "0.1.0"
 
 # Core exports
-from quantum_jit.core import qjit, QuantumJITCompiler
+from quantum_jit.core import qjit, QuantumJITCompiler, visualize_all
 
 # Export pattern detection for advanced usage
 from quantum_jit.patterns.common_patterns import (
@@ -62,6 +62,7 @@ from quantum_jit.runtime.result_processor import ResultProcessor
 # Define what's available with from quantum_jit import *
 __all__ = [
     'qjit',
+    'visualize_all',
     'QuantumJITCompiler',
     'BasePatternDetector',
     'FunctionAnalyzer',

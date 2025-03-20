@@ -47,8 +47,21 @@ def create_quantum_fourier_transform(
         cached_circuit = circuit_cache.get_circuit(id(classical_func), input_shape)
         
         if cached_circuit is None:
-            # Create a new circuit
-            circuit = circuit_generator.generate_qft_circuit(num_qubits)
+            # Create a new QFT circuit
+            qft_circuit = circuit_generator.generate_qft_circuit(num_qubits)
+            
+            # Create a new circuit with classical registers for measurement
+            from qiskit import QuantumCircuit, ClassicalRegister
+            circuit = QuantumCircuit(qft_circuit.num_qubits, qft_circuit.num_qubits)
+            
+            # Copy the QFT operations to the new circuit
+            for instr in qft_circuit.data:
+                circuit.append(instr.operation, instr.qubits)
+            
+            # Add measurement operations
+            for i in range(num_qubits):
+                circuit.measure(i, i)
+                
             cached_circuit = circuit_optimizer.optimize_circuit(circuit)
             circuit_cache.store_circuit(id(classical_func), input_shape, cached_circuit)
         

@@ -1,0 +1,9 @@
+{
+  "search_function": {
+    "classical_time": 1.6689300537109375e-06,
+    "quantum_time": 0.18254685401916504,
+    "speedup": 9.142475024717334e-06,
+    "timestamp": 1742442306.3529706,
+    "correct": false
+  }
+}

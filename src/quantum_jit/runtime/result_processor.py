@@ -178,10 +178,10 @@ class ResultProcessor:
                 results[x] = original_func(binary_x)
         
         return results
-    
+
     def process_optimization_results(self, counts: Dict[str, int],
-                                   original_func: Callable, shots: int,
-                                   params: Optional[Dict[str, Any]] = None) -> Any:
+                                original_func: Callable, shots: int,
+                                params: Optional[Dict[str, Any]] = None) -> Any:
         """
         Process optimization results.
         
@@ -194,8 +194,13 @@ class ResultProcessor:
         Returns:
             Optimal solution
         """
-        # Extract objective function if provided
+        # Extract objective function and number of variables
         obj_func = params.get('objective_func', None) if params else None
+        num_vars = params.get('num_vars', None) if params else None
+        
+        if obj_func is None or num_vars is None:
+            # Can't process without these parameters
+            return original_func(*params.get('args', []), **params.get('kwargs', {}))
         
         # Number of bits
         n = len(next(iter(counts.keys()))) if counts else 0
@@ -219,11 +224,24 @@ class ResultProcessor:
                 best_solution = binary_x
         
         # Match original function output format
-        if isinstance(original_func([0] * n) if n > 0 else None, tuple):
+        try:
+            # Create a sample input to check the return type
+            # This was the issue - optimize_binary needs two args
+            original_result = None
+            if 'args' in params:
+                original_result = original_func(*params['args'])
+            else:
+                # Assuming obj_func and num_vars are the required arguments
+                original_result = original_func(obj_func, num_vars)
+                
+            if isinstance(original_result, tuple):
+                return best_solution, best_value
+            else:
+                return best_solution
+        except Exception:
+            # If we can't determine, return as tuple
             return best_solution, best_value
-        else:
-            return best_solution
-    
+
     def _function_expects_integer(self, func: Callable) -> bool:
         """Determine if a function expects an integer or a list/array."""
         try:

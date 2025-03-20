@@ -15,67 +15,17 @@ from quantum_jit.runtime.result_processor import ResultProcessor
 # Import patterns
 from quantum_jit.patterns import analyze_function, AVAILABLE_DETECTORS
 
-# Import implementation modules
-from quantum_jit.implementations.matrix_multiply import create_quantum_matrix_multiply
-from quantum_jit.implementations.fourier_transform import create_quantum_fourier_transform
-from quantum_jit.implementations.search import create_quantum_search
-from quantum_jit.implementations.optimization import create_quantum_optimization
-from quantum_jit.implementations.binary_function import create_quantum_binary_evaluation
-from quantum_jit.implementations.selector import create_quantum_implementation
+# Import benchmarking utilities
+from quantum_jit.benchmarking.benchmarker import time_execution, print_benchmark_results
+
+# Import decision making logic
 from quantum_jit.decision.decision_maker import compare_results
-from quantum_jit.visualization import call_graph, pattern_dashboard, performance_tracker
 
+# Import implementation selector
+from quantum_jit.implementations.selector import create_quantum_implementation
 
-# Helper functions
-def time_execution(func: Callable, args: tuple, kwargs: dict) -> Tuple[Any, float]:
-    """Time the execution of a function."""
-    start_time = time.time()
-    try:
-        result = func(*args, **kwargs)
-        execution_time = time.time() - start_time
-        return result, execution_time
-    except Exception as e:
-        execution_time = time.time() - start_time
-        raise
-
-
-
-
-
-def select_quantum_implementation(pattern_name: str, classical_func: Callable, 
-                               components: Dict[str, Any]) -> Optional[Callable]:
-    """Select appropriate quantum implementation based on pattern."""
-    # Special cases based on function name
-    if classical_func.__name__ == "evaluate_all":
-        return create_quantum_binary_evaluation(
-            classical_func,
-            components['circuit_generator'],
-            components['circuit_optimizer'],
-            components['circuit_cache'],
-            components['execution_manager'],
-            components['result_processor']
-        )
-    
-    # Pattern-based implementation selection
-    implementations = {
-        "matrix_multiplication": create_quantum_matrix_multiply,
-        "fourier_transform": create_quantum_fourier_transform,
-        "search_algorithm": create_quantum_search,
-        "optimization": create_quantum_optimization
-    }
-    
-    if pattern_name in implementations:
-        return implementations[pattern_name](
-            classical_func,
-            components['circuit_generator'],
-            components['circuit_optimizer'],
-            components['circuit_cache'],
-            components['execution_manager'],
-            components['result_processor']
-        )
-    
-    return None
-
+# Global registry of compiler instances
+_compiler_instances = []
 
 class QuantumJITCompiler:
     """
@@ -89,7 +39,8 @@ class QuantumJITCompiler:
                  min_speedup: float = 1.1,
                  verbose: bool = True,
                  cache_size: int = 100,
-                 detectors: Optional[Dict[str, Callable]] = None):
+                 detectors: Optional[Dict[str, Callable]] = None,
+                 visualize_after: Optional[int] = None):
         """
         Initialize the quantum JIT compiler.
         
@@ -100,6 +51,7 @@ class QuantumJITCompiler:
             verbose: Whether to print performance information
             cache_size: Maximum number of circuits to cache
             detectors: Optional dictionary of custom detectors
+            visualize_after: Generate visualizations after this many total function calls
         """
         # Initialize components
         self.circuit_generator = QuantumCircuitGenerator()
@@ -121,16 +73,24 @@ class QuantumJITCompiler:
         self.auto_patch = auto_patch
         self.min_speedup = min_speedup
         self.verbose = verbose
+        self.visualize_after = visualize_after
         
         # Performance tracking
         self.performance_data = {}
         self.call_counters = {}
+        self.total_calls = 0
         
         # Patched function registry
         self.quantum_implementations = {}
         
+        # Pattern detection data
+        self.pattern_data = {}
+        
         # Initialize pattern detectors
         self.detectors = detectors or AVAILABLE_DETECTORS
+        
+        # Register this instance
+        _compiler_instances.append(self)
     
     def jit(self, func: Callable) -> Callable:
         """
@@ -151,6 +111,7 @@ class QuantumJITCompiler:
         def wrapper(*args, **kwargs):
             # Use the original function ID for tracking
             self.call_counters[original_func_id] += 1
+            self.total_calls += 1
             call_count = self.call_counters[original_func_id]
             
             # First call: always use classical and benchmark
@@ -174,6 +135,8 @@ class QuantumJITCompiler:
                         
                         # Store performance data using original function ID
                         self.performance_data[original_func_id] = {
+                            'timestamp': time.time(),
+                            'function_name': original_func.__name__,
                             'classical_time': classical_time,
                             'quantum_time': quantum_time,
                             'speedup': speedup,
@@ -184,10 +147,17 @@ class QuantumJITCompiler:
                             print_benchmark_results(original_func.__name__, classical_time, 
                                                  quantum_time, speedup, is_correct)
                 
+                # Check if we should generate visualizations
+                if self.visualize_after and self.total_calls >= self.visualize_after:
+                    if self.verbose:
+                        print(f"Generating quantum acceleration visualizations after {self.total_calls} calls")
+                    self.visualize_after = None  # Reset so we don't keep visualizing
+                    self.visualize_acceleration()
+                
                 return classical_result
             
             # Subsequent calls: decide which implementation to use
-            use_quantum = self._should_use_quantum(original_func_id)
+            use_quantum = self._should_use_quantum(original_func_id, args, kwargs)
             
             if use_quantum:
                 if self.verbose:
@@ -248,6 +218,15 @@ class QuantumJITCompiler:
             pattern_name = max(patterns.items(), key=lambda x: x[1])[0]
             confidence = patterns[pattern_name]
             
+            # Store pattern data for visualization
+            self.pattern_data[func_id] = {
+                'timestamp': time.time(),
+                'function_name': func.__name__,
+                'pattern': pattern_name,
+                'confidence': confidence,
+                'patterns_detected': patterns
+            }
+            
             if self.verbose:
                 print(f"Detected {pattern_name} pattern in {func.__name__} with confidence {confidence}")
             
@@ -272,65 +251,125 @@ class QuantumJITCompiler:
                 traceback.print_exc()
             
             return None
-
+    
     def visualize_acceleration(self, output_dir='./quantum_viz'):
-        """Generate visualizations of quantum acceleration."""
-        import os
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            
-        # Prepare data for visualizations
-        pattern_data = []
-        performance_history = []
-        function_registry = {}
+        """
+        Generate visualizations of quantum acceleration data.
         
-        for func_id, quantum_func in self.quantum_implementations.items():
-            if hasattr(quantum_func, '__wrapped__'):
-                func_name = quantum_func.__wrapped__.__name__
+        Args:
+            output_dir: Directory to save visualization files
+        """
+        try:
+            from quantum_jit.visualization import (
+                call_graph, 
+                pattern_dashboard, 
+                performance_tracker,
+                code_annotator
+            )
+            
+            import os
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                
+            # Prepare data for visualizations
+            pattern_data = []
+            performance_history = []
+            function_registry = {}
+            
+            for func_id, perf_data in self.performance_data.items():
+                func_name = perf_data.get('function_name', 'unknown')
                 function_registry[func_id] = func_name
                 
-                # Get pattern data
-                if func_id in self.performance_data:
-                    perf_data = self.performance_data[func_id]
-                    speedup = perf_data.get('speedup', 0)
+                # Get pattern information if available
+                pattern_info = self.pattern_data.get(func_id, {})
+                
+                if pattern_info:
+                    pattern_data.append({
+                        'function': func_name,
+                        'pattern': pattern_info.get('pattern', 'unknown'),
+                        'confidence': pattern_info.get('confidence', 0),
+                        'speedup': perf_data.get('speedup', 0),
+                        'timestamp': pattern_info.get('timestamp', time.time())
+                    })
                     
-                    # Get pattern information
-                    pattern_info = self._get_pattern_info(func_id)
-                    
-                    if pattern_info:
-                        pattern_data.append({
-                            'function': func_name,
-                            'pattern': pattern_info['pattern'],
-                            'confidence': pattern_info['confidence'],
-                            'speedup': speedup
-                        })
-                        
-                        # Add to performance history
-                        performance_history.append({
-                            'timestamp': pattern_info['timestamp'],
-                            'function': func_name,
-                            'classical_time': perf_data.get('classical_time', 0),
-                            'quantum_time': perf_data.get('quantum_time', 0),
-                            'speedup': speedup
-                        })
-        
-        # Generate visualizations
-        call_graph.create_call_graph(
-            self.quantum_implementations, 
-            self.performance_data,
-            function_registry
-        )
-        
-        if pattern_data:
-            pattern_dashboard.visualize_patterns(pattern_data)
+                    # Add to performance history
+                    performance_history.append({
+                        'timestamp': perf_data.get('timestamp', time.time()),
+                        'function': func_name,
+                        'classical_time': perf_data.get('classical_time', 0),
+                        'quantum_time': perf_data.get('quantum_time', 0),
+                        'speedup': perf_data.get('speedup', 0)
+                    })
             
-        if performance_history:
-            performance_tracker.visualize_performance_timeline(performance_history)
-
+            # Generate visualizations
+            if function_registry:
+                call_graph.create_call_graph(
+                    self.quantum_implementations, 
+                    self.performance_data,
+                    function_registry,
+                    output_dir=output_dir
+                )
+            
+            if pattern_data:
+                pattern_dashboard.visualize_patterns(
+                    pattern_data,
+                    output_dir=output_dir
+                )
+                
+            if performance_history:
+                performance_tracker.visualize_performance_timeline(
+                    performance_history,
+                    output_dir=output_dir
+                )
+                
+            # Also save the data for potential later use
+            self._save_visualization_data(output_dir)
+            
+            if self.verbose:
+                print(f"Visualizations saved to {output_dir}")
+                
+        except ImportError as e:
+            if self.verbose:
+                print(f"Visualization requires additional dependencies: {e}")
+                print("Please install visualization requirements with: pip install quantum-jit[viz]")
+    
+    def _save_visualization_data(self, output_dir):
+        """Save performance and pattern data for external visualization tools."""
+        import json
+        import os
+        
+        # Convert to JSON-serializable format
+        performance_json = {}
+        for func_id, data in self.performance_data.items():
+            func_name = data.get('function_name', f'func_{func_id}')
+            performance_json[func_name] = {
+                'classical_time': data.get('classical_time', 0),
+                'quantum_time': data.get('quantum_time', 0),
+                'speedup': data.get('speedup', 0),
+                'timestamp': data.get('timestamp', 0),
+                'correct': data.get('correct', False)
+            }
+            
+        pattern_json = {}
+        for func_id, data in self.pattern_data.items():
+            func_name = data.get('function_name', f'func_{func_id}')
+            pattern_json[func_name] = {
+                'pattern': data.get('pattern', 'unknown'),
+                'confidence': data.get('confidence', 0),
+                'timestamp': data.get('timestamp', 0)
+            }
+        
+        # Save to JSON files
+        with open(os.path.join(output_dir, 'performance_data.json'), 'w') as f:
+            json.dump(performance_json, f, indent=2)
+            
+        with open(os.path.join(output_dir, 'pattern_data.json'), 'w') as f:
+            json.dump(pattern_json, f, indent=2)
 
 
 # Simplified API
-def qjit(func=None, *, auto_patch=True, min_speedup=1.1, verbose=True, cache_size=100, detectors=None):
+def qjit(func=None, *, auto_patch=True, min_speedup=1.1, verbose=True, 
+         cache_size=100, detectors=None, visualize_after=None):
     """
     Decorator to apply quantum JIT compilation to a function.
     
@@ -341,6 +380,7 @@ def qjit(func=None, *, auto_patch=True, min_speedup=1.1, verbose=True, cache_siz
         verbose: Whether to print performance information
         cache_size: Maximum number of circuits to cache
         detectors: Optional dictionary of custom detectors
+        visualize_after: Generate visualizations after this many total function calls
         
     Returns:
         Wrapped function that may use quantum implementation
@@ -351,7 +391,8 @@ def qjit(func=None, *, auto_patch=True, min_speedup=1.1, verbose=True, cache_siz
         min_speedup=min_speedup,
         verbose=verbose,
         cache_size=cache_size,
-        detectors=detectors
+        detectors=detectors,
+        visualize_after=visualize_after
     )
     
     # Handle both @qjit and @qjit(...)
@@ -359,3 +400,9 @@ def qjit(func=None, *, auto_patch=True, min_speedup=1.1, verbose=True, cache_siz
         return lambda f: compiler.jit(f)
     
     return compiler.jit(func)
+
+
+def visualize_all(output_dir='./quantum_viz'):
+    """Generate visualizations for all quantum JIT compilers."""
+    for compiler in _compiler_instances:
+        compiler.visualize_acceleration(output_dir)
