@@ -105,7 +105,6 @@ def detect_fourier_transform(tree: ast.AST, func: Callable) -> float:
     
     fft_calls = []
     pattern_nodes = []
-    
     # Check for FFT function calls
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):

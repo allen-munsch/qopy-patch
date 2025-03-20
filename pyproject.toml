@@ -1,5 +1,5 @@
 [project]
-name = "quantum-copy-and-patch-jit"
+name = "qopy-patch"
 version = "0.1.0"
 description = "An example library for quantum copy and patch jit"
 authors = [
@@ -8,6 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "dill>=0.3.9",
     "networkx>=3.4.2",
     "numpy>=2.2.0",
     "pandas>=2.2.3",

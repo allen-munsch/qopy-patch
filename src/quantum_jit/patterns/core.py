@@ -9,6 +9,8 @@ import inspect
 import textwrap
 from typing import Dict, Callable, Any, List, Optional, Union, Tuple
 
+import dill
+
 # Type alias for pattern detector functions
 PatternDetector = Callable[[ast.AST, Callable], float]
 
@@ -43,7 +45,7 @@ def analyze_function(func: Union[Callable, ast.AST],
         # It's a real function object
         try:
             # Get source code of the function
-            source = inspect.getsource(func)
+            source = dill.source.getsource(func)
             
             # Fix for indentation error: dedent the source code
             source = textwrap.dedent(source)

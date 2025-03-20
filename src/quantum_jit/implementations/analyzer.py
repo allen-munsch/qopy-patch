@@ -4,7 +4,7 @@ Analyze functions to detect quantum-accelerable patterns.
 from typing import Callable, Dict, Any, Optional
 
 from quantum_jit.patterns import analyze_function
-from quantum_jorf.implementations.selector import create_quantum_implementation
+from quantum_jit.implementations.selector import create_quantum_implementation
 
 
 def analyze_and_patch(
