@@ -17,13 +17,9 @@ Key features:
 ## Installation
 
 ```bash
-pip install quantum-copy-and-patch-jit
+pip install qopy-patch
 ```
 
-For visualization support:
-```bash
-pip install quantum-copy-and-patch-jit[viz]
-```
 
 ## Basic Usage
 
