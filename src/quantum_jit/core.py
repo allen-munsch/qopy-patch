@@ -1,22 +1,79 @@
 """
 Core implementation of the quantum copy-and-patch JIT system.
 """
-import time
-import inspect
 import functools
-import ast
+import time
 from typing import Dict, Any, List, Callable, Tuple, Optional, Union
 
-import numpy as np
-from qiskit import QuantumCircuit
-
-# Import our modules - using new pattern detection system
-from quantum_jit.patterns import analyze_function, AVAILABLE_DETECTORS
+# Import components
 from quantum_jit.circuit_generation.circuit_generator import QuantumCircuitGenerator
 from quantum_jit.circuit_generation.circuit_optimizer import CircuitOptimizer
 from quantum_jit.runtime.circuit_cache import CircuitCache
 from quantum_jit.runtime.execution_manager import ExecutionManager
 from quantum_jit.runtime.result_processor import ResultProcessor
+
+# Import patterns
+from quantum_jit.patterns import analyze_function, AVAILABLE_DETECTORS
+
+# Import implementation modules
+from quantum_jit.implementations.matrix_multiply import create_quantum_matrix_multiply
+from quantum_jit.implementations.fourier_transform import create_quantum_fourier_transform
+from quantum_jit.implementations.search import create_quantum_search
+from quantum_jit.implementations.optimization import create_quantum_optimization
+from quantum_jit.implementations.binary_function import create_quantum_binary_evaluation
+from quantum_jit.implementations.selector import create_quantum_implementation
+from quantum_jit.decision.decision_maker import compare_results
+
+
+# Helper functions
+def time_execution(func: Callable, args: tuple, kwargs: dict) -> Tuple[Any, float]:
+    """Time the execution of a function."""
+    start_time = time.time()
+    try:
+        result = func(*args, **kwargs)
+        execution_time = time.time() - start_time
+        return result, execution_time
+    except Exception as e:
+        execution_time = time.time() - start_time
+        raise
+
+
+
+
+
+def select_quantum_implementation(pattern_name: str, classical_func: Callable, 
+                               components: Dict[str, Any]) -> Optional[Callable]:
+    """Select appropriate quantum implementation based on pattern."""
+    # Special cases based on function name
+    if classical_func.__name__ == "evaluate_all":
+        return create_quantum_binary_evaluation(
+            classical_func,
+            components['circuit_generator'],
+            components['circuit_optimizer'],
+            components['circuit_cache'],
+            components['execution_manager'],
+            components['result_processor']
+        )
+    
+    # Pattern-based implementation selection
+    implementations = {
+        "matrix_multiplication": create_quantum_matrix_multiply,
+        "fourier_transform": create_quantum_fourier_transform,
+        "search_algorithm": create_quantum_search,
+        "optimization": create_quantum_optimization
+    }
+    
+    if pattern_name in implementations:
+        return implementations[pattern_name](
+            classical_func,
+            components['circuit_generator'],
+            components['circuit_optimizer'],
+            components['circuit_cache'],
+            components['execution_manager'],
+            components['result_processor']
+        )
+    
+    return None
 
 
 class QuantumJITCompiler:
@@ -49,6 +106,15 @@ class QuantumJITCompiler:
         self.circuit_cache = CircuitCache(max_size=cache_size)
         self.execution_manager = ExecutionManager(backend_name=backend_name)
         self.result_processor = ResultProcessor()
+        
+        # Create components dictionary for easier passing to functions
+        self.components = {
+            'circuit_generator': self.circuit_generator,
+            'circuit_optimizer': self.circuit_optimizer,
+            'circuit_cache': self.circuit_cache,
+            'execution_manager': self.execution_manager,
+            'result_processor': self.result_processor
+        }
         
         # Settings
         self.auto_patch = auto_patch
@@ -89,40 +155,38 @@ class QuantumJITCompiler:
             # First call: always use classical and benchmark
             if call_count == 1:
                 # Timing the classical execution
-                classical_result, classical_time = self._time_execution(original_func, args, kwargs)
+                classical_result, classical_time = time_execution(original_func, args, kwargs)
                 
                 # Analyze and potentially create quantum version
                 if self.auto_patch:
-                    # We analyze the original function, not the wrapper
-                    self._analyze_and_patch(original_func)
-                
-                # If we created a quantum version, benchmark it
-                if original_func_id in self.quantum_implementations:
-                    q_func = self.quantum_implementations[original_func_id]
-                    quantum_result, quantum_time = self._time_execution(q_func, args, kwargs)
+                    quantum_func = self._analyze_and_patch(original_func)
                     
-                    # Compare results for correctness
-                    is_correct = self._compare_results(classical_result, quantum_result)
-                    
-                    # Calculate speedup
-                    speedup = classical_time / quantum_time if quantum_time > 0 else 0
-                    
-                    # Store performance data using original function ID
-                    self.performance_data[original_func_id] = {
-                        'classical_time': classical_time,
-                        'quantum_time': quantum_time,
-                        'speedup': speedup,
-                        'correct': is_correct
-                    }
-                    
-                    if self.verbose:
-                        self._print_benchmark_results(original_func.__name__, classical_time, 
-                                                    quantum_time, speedup, is_correct)
+                    # If we created a quantum version, benchmark it
+                    if quantum_func:
+                        quantum_result, quantum_time = time_execution(quantum_func, args, kwargs)
+                        
+                        # Compare results for correctness
+                        is_correct = compare_results(classical_result, quantum_result)
+                        
+                        # Calculate speedup
+                        speedup = classical_time / quantum_time if quantum_time > 0 else 0
+                        
+                        # Store performance data using original function ID
+                        self.performance_data[original_func_id] = {
+                            'classical_time': classical_time,
+                            'quantum_time': quantum_time,
+                            'speedup': speedup,
+                            'correct': is_correct
+                        }
+                        
+                        if self.verbose:
+                            print_benchmark_results(original_func.__name__, classical_time, 
+                                                 quantum_time, speedup, is_correct)
                 
                 return classical_result
             
             # Subsequent calls: decide which implementation to use
-            use_quantum = self._should_use_quantum(original_func_id, args, kwargs)
+            use_quantum = self._should_use_quantum(original_func_id)
             
             if use_quantum:
                 if self.verbose:
@@ -136,38 +200,14 @@ class QuantumJITCompiler:
         
         return wrapper
     
-    def _compare_results(self, result1: Any, result2: Any) -> bool:
-        """
-        Compare two results for approximate equality.
-        
-        Args:
-            result1: First result
-            result2: Second result
-            
-        Returns:
-            True if results are approximately equal
-        """
-        try:
-            if isinstance(result1, np.ndarray) and isinstance(result2, np.ndarray):
-                return np.allclose(result1, result2, rtol=1e-2, atol=1e-2)
-            elif isinstance(result1, dict) and isinstance(result2, dict):
-                if set(result1.keys()) != set(result2.keys()):
-                    return False
-                return all(abs(result1[k] - result2[k]) < 1e-2 
-                          for k in result1 if isinstance(result1[k], (int, float)))
-            else:
-                return result1 == result2
-        except:
-            return False
-    
-    def _should_use_quantum(self, func_id: int, args: tuple, kwargs: dict) -> bool:
+    def _should_use_quantum(self, func_id: int, args=None, kwargs=None) -> bool:
         """
         Determine if quantum implementation should be used.
         
         Args:
             func_id: Function ID
-            args: Function arguments
-            kwargs: Function keyword arguments
+            args: Function arguments (not used, kept for backward compatibility)
+            kwargs: Function keyword arguments (not used, kept for backward compatibility)
             
         Returns:
             True if quantum implementation should be used
@@ -183,430 +223,13 @@ class QuantumJITCompiler:
         # Only use quantum if it's correct and faster than minimum speedup
         return perf['correct'] and perf['speedup'] >= self.min_speedup
     
-    def _print_benchmark_results(self, 
-                                func_name: str, 
-                                classical_time: float, 
-                                quantum_time: float, 
-                                speedup: float,
-                                is_correct: bool) -> None:
-        """Print benchmark results."""
-        print(f"Function {func_name} benchmarked:")
-        print(f"  Classical time: {classical_time:.6f}s")
-        print(f"  Quantum time: {quantum_time:.6f}s")
-        print(f"  Speedup: {speedup:.2f}x")
-        print(f"  Correct results: {is_correct}")
+    # Method added for backwards compatibility with tests
+    def _compare_results(self, result1, result2):
+        """Wrapper for compare_results for backward compatibility."""
+        return compare_results(result1, result2)
     
-    def _create_quantum_matrix_multiply(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation of matrix multiplication.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        def quantum_matrix_multiply(*args, **kwargs):
-            # Simple implementation for demonstration
-            # In a real implementation, we would use a quantum algorithm for
-            # matrix multiplication or linear systems
-            
-            # For now, we'll just apply the Hadamard transform as an example
-            if len(args) < 2:
-                return classical_func(*args, **kwargs)
-                
-            a, b = args[0], args[1]
-            
-            # Check if we can use the cache
-            input_shape = (getattr(a, 'shape', None), getattr(b, 'shape', None))
-            cached_circuit = self.circuit_cache.get_circuit(id(classical_func), input_shape)
-            
-            if cached_circuit is None:
-                # Create a new circuit
-                num_qubits = 3  # Simplified for demo
-                circuit = self.circuit_generator.generate_hadamard_circuit(num_qubits)
-                cached_circuit = self.circuit_optimizer.optimize_circuit(circuit)
-                self.circuit_cache.store_circuit(id(classical_func), input_shape, cached_circuit)
-            
-            # Execute the circuit
-            job_id = self.execution_manager.execute_circuit(cached_circuit)
-            result = self.execution_manager.get_result(job_id)
-            
-            # Process results
-            if result:
-                counts = result['counts']
-                return self.result_processor.process_results(
-                    counts, 'hadamard', classical_func, params={'args': args}
-                )
-            
-            # Fallback to classical
-            return classical_func(*args, **kwargs)
-        
-        return quantum_matrix_multiply
-    
-    def _create_quantum_fourier_transform(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation of the Fourier transform.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        def quantum_fourier_transform(*args, **kwargs):
-            # Check if we have input data
-            if not args:
-                return classical_func(*args, **kwargs)
-            
-            # Get input vector
-            input_vector = args[0]
-            n = len(input_vector) if hasattr(input_vector, '__len__') else 0
-            
-            # Check if size is power of 2 (required for QFT)
-            if n == 0 or (n & (n-1)) != 0:  # Not a power of 2
-                return classical_func(*args, **kwargs)
-            
-            num_qubits = int(np.log2(n))
-            
-            # Check if we can use the cache
-            input_shape = getattr(input_vector, 'shape', None)
-            cached_circuit = self.circuit_cache.get_circuit(id(classical_func), input_shape)
-            
-            if cached_circuit is None:
-                # Create a new circuit
-                circuit = self.circuit_generator.generate_qft_circuit(num_qubits)
-                cached_circuit = self.circuit_optimizer.optimize_circuit(circuit)
-                self.circuit_cache.store_circuit(id(classical_func), input_shape, cached_circuit)
-            
-            # Execute the circuit
-            job_id = self.execution_manager.execute_circuit(cached_circuit)
-            result = self.execution_manager.get_result(job_id)
-            
-            # Process results
-            if result:
-                counts = result['counts']
-                return self.result_processor.process_results(
-                    counts, 'qft', classical_func, params={'input_vector': input_vector}
-                )
-            
-            # Fallback to classical
-            return classical_func(*args, **kwargs)
-        
-        return quantum_fourier_transform
-
-    def _create_quantum_search(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation of search using Grover's algorithm.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        def quantum_search(*args, **kwargs):
-            # Check if we have input data
-            if not args:
-                return classical_func(*args, **kwargs)
-            
-            # Get items to search and target value
-            items = args[0] if args else []
-            target = args[1] if len(args) > 1 else None
-            
-            # Handle numpy arrays or other non-standard containers
-            if isinstance(items, np.ndarray):
-                if items.size == 0:
-                    return classical_func(*args, **kwargs)
-            elif not items:
-                return classical_func(*args, **kwargs)
-            
-            # Check if target is provided
-            if target is None:
-                return classical_func(*args, **kwargs)
-            
-            # Determine number of qubits needed
-            if isinstance(items, np.ndarray):
-                n = items.size
-            else:
-                n = len(items)
-                
-            num_qubits = int(np.ceil(np.log2(n)))
-            
-            # Create a function to check if an item matches the target
-            def is_target(x):
-                return x == target
-            
-            # Check if we can use the cache
-            input_shape = (n, id(target))
-            cached_circuit = self.circuit_cache.get_circuit(id(classical_func), input_shape)
-            
-            if cached_circuit is None:
-                # Create oracle function
-                def oracle(qc):
-                    # Mark states where items[i] == target
-                    for i in range(min(n, 2**num_qubits)):
-                        try:
-                            item = items[i]
-                            if isinstance(target, (int, float)) and isinstance(item, (int, float)):
-                                if is_target(item):
-                                    # Mark this state
-                                    binary = format(i, f'0{num_qubits}b')
-                                    
-                                    # Apply X gates to qubits where binary digit is 0
-                                    for j, bit in enumerate(binary):
-                                        if bit == '0':
-                                            qc.x(j)
-                                    
-                                    # Apply multi-controlled Z
-                                    qc.h(num_qubits-1)
-                                    qc.mcx(list(range(num_qubits-1)), num_qubits-1)
-                                    qc.h(num_qubits-1)
-                                    
-                                    # Undo X gates
-                                    for j, bit in enumerate(binary):
-                                        if bit == '0':
-                                            qc.x(j)
-                        except Exception as e:
-                            # Skip items that can't be compared
-                            continue
-                    
-                    return qc
-                
-                # Create a new circuit
-                circuit = self.circuit_generator.generate_grover_circuit(
-                    num_qubits=num_qubits,
-                    oracle_func=oracle
-                )
-                cached_circuit = self.circuit_optimizer.optimize_circuit(circuit)
-                self.circuit_cache.store_circuit(id(classical_func), input_shape, cached_circuit)
-            
-            # Execute the circuit
-            job_id = self.execution_manager.execute_circuit(cached_circuit)
-            result = self.execution_manager.get_result(job_id)
-            
-            # Process results
-            if result:
-                counts = result['counts']
-                return self.result_processor.process_results(
-                    counts, 'grover', classical_func, 
-                    params={'items': items, 'target': target}
-                )
-            
-            # Fallback to classical
-            return classical_func(*args, **kwargs)
-        
-        return quantum_search
-
-    def _create_quantum_optimization(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation for optimization problems.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        def quantum_optimization(*args, **kwargs):
-            """Quantum implementation of optimization."""
-            # Extract objective function
-            if not args:
-                return classical_func(*args, **kwargs)
-            
-            obj_func = args[0]
-            
-            # Number of variables
-            num_vars = args[1] if len(args) > 1 else None
-            if num_vars is None:
-                # Try to determine from kwargs or signature
-                if 'num_vars' in kwargs:
-                    num_vars = kwargs['num_vars']
-                else:
-                    # Fallback to classical
-                    return classical_func(*args, **kwargs)
-            
-            # Analyze objective function to create Hamiltonian
-            # For simplicity, we'll just create a simple QAOA circuit
-            
-            # Create a basic Hamiltonian (simplified example)
-            problem_hamiltonian = []
-            for i in range(num_vars):
-                problem_hamiltonian.append(([i], 1.0))  # Linear terms
-                
-            for i in range(num_vars-1):
-                problem_hamiltonian.append(([i, i+1], 0.5))  # Quadratic terms
-            
-            # Create QAOA circuit
-            circuit = self.circuit_generator.generate_qaoa_circuit(
-                problem_hamiltonian=problem_hamiltonian,
-                num_qubits=num_vars
-            )
-            
-            optimized_circuit = self.circuit_optimizer.optimize_circuit(circuit)
-            
-            # Execute circuit
-            job_id = self.execution_manager.execute_circuit(optimized_circuit)
-            result = self.execution_manager.get_result(job_id)
-            
-            # Process results
-            if result:
-                counts = result['counts']
-                return self.result_processor.process_results(
-                    counts, 'optimization', classical_func, 
-                    params={'objective_func': obj_func, 'num_vars': num_vars}
-                )
-            
-            # Fallback to classical
-            return classical_func(*args, **kwargs)
-        
-        return quantum_optimization
-
-    def _create_quantum_sampling(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation for sampling tasks.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        def quantum_sampling(*args, **kwargs):
-            """Quantum implementation of sampling."""
-            # For quantum sampling, we'll use a parametrized circuit
-            # that can generate various distributions
-            
-            # Extract parameters
-            n_samples = kwargs.get('n_samples', 1000)
-            n_qubits = kwargs.get('n_qubits', 4)
-            
-            # Create a simple quantum circuit for sampling
-            qc = QuantumCircuit(n_qubits, n_qubits)
-            
-            # Apply Hadamard to create superposition
-            for i in range(n_qubits):
-                qc.h(i)
-            
-            # Add some entanglement
-            for i in range(n_qubits-1):
-                qc.cx(i, i+1)
-            
-            # Add some rotation gates to bias the distribution
-            for i in range(n_qubits):
-                qc.ry(np.pi/4, i)  # 45-degree rotation
-            
-            # Measure
-            qc.measure(range(n_qubits), range(n_qubits))
-            
-            # Optimize
-            optimized_circuit = self.circuit_optimizer.optimize_circuit(qc)
-            
-            # Execute multiple times to get samples
-            job_id = self.execution_manager.execute_circuit(
-                optimized_circuit, shots=n_samples
-            )
-            result = self.execution_manager.get_result(job_id)
-            
-            if result:
-                # Return samples based on measurement counts
-                counts = result['counts']
-                # Convert to format expected by the original function
-                return self._format_samples(counts, n_qubits, n_samples)
-            
-            # Fallback to classical
-            return classical_func(*args, **kwargs)
-        
-        return quantum_sampling
-    
-    def _format_samples(self, counts, n_qubits, n_samples):
-        """Format quantum measurement counts as samples."""
-        samples = []
-        for bitstring, count in counts.items():
-            # Convert bitstring to integer
-            value = int(bitstring, 2)
-            # Add this value to samples list with appropriate frequency
-            frequency = int(count * n_samples / sum(counts.values()))
-            samples.extend([value] * frequency)
-        
-        # Ensure we have exactly n_samples
-        while len(samples) < n_samples:
-            samples.append(samples[0])  # Pad with the first sample
-        while len(samples) > n_samples:
-            samples.pop()  # Remove extra samples
-            
-        return np.array(samples)
-
-    def _create_quantum_machine_learning(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation for machine learning tasks.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        # This is a placeholder for quantum ML implementation
-        # A real implementation would use quantum neural networks, QSVMs, etc.
-        return classical_func
-        
-    def _create_quantum_binary_evaluation(self, classical_func: Callable) -> Callable:
-        """
-        Create a quantum implementation for binary function evaluation.
-        
-        Args:
-            classical_func: Classical implementation
-            
-        Returns:
-            Quantum implementation
-        """
-        def quantum_binary_evaluation(f, n, *args, **kwargs):
-            """Quantum implementation of binary function evaluation."""
-            # Create a quantum circuit
-            qc = QuantumCircuit(n + 1, n)
-            
-            # Put input qubits in superposition
-            for i in range(n):
-                qc.h(i)
-            
-            # Initialize output qubit
-            qc.x(n)
-            qc.h(n)
-            
-            # Apply function evaluation (simplified example for parity)
-            # In a real implementation, we would analyze f and create the appropriate circuit
-            for i in range(n):
-                qc.cx(i, n)
-            
-            # Measure input qubits
-            qc.measure(range(n), range(n))
-            
-            # Execute circuit
-            job_id = self.execution_manager.execute_circuit(qc)
-            result = self.execution_manager.get_result(job_id)
-            
-            # Process results
-            if result:
-                counts = result['counts']
-                # The key fix: Pass the function f instead of classical_func to process_results
-                return self.result_processor.process_results(
-                    counts, 'binary_function', f, 
-                    params={'n': n}
-                )
-            
-            # Fallback to classical implementation
-            return classical_func(f, n, *args, **kwargs)
-        
-        return quantum_binary_evaluation
-
-    def _analyze_and_patch(self, func: Callable) -> None:
-        """
-        Analyze a function and create a quantum version if a pattern is recognized.
-        
-        Args:
-            func: Function to analyze
-        """
+    def _analyze_and_patch(self, func: Callable) -> Optional[Callable]:
+        """Analyze a function and create a quantum implementation if a pattern is detected."""
         # Use the original function, not a wrapper
         if hasattr(func, '__wrapped__'):
             func = func.__wrapped__
@@ -614,11 +237,11 @@ class QuantumJITCompiler:
         func_id = id(func)
         
         try:
-            # Detect quantum patterns using the new functional pattern detection
+            # Detect quantum patterns
             patterns = analyze_function(func, self.detectors)
             
             if not patterns:
-                return
+                return None
             
             # Get the highest confidence pattern
             pattern_name = max(patterns.items(), key=lambda x: x[1])[0]
@@ -627,55 +250,27 @@ class QuantumJITCompiler:
             if self.verbose:
                 print(f"Detected {pattern_name} pattern in {func.__name__} with confidence {confidence}")
             
-            # Special case for binary function evaluation
-            if func.__name__ == "evaluate_all":
-                self.quantum_implementations[func_id] = self._create_quantum_binary_evaluation(func)
-                return
+            # Create quantum implementation
+            quantum_func = create_quantum_implementation(
+                pattern_name, 
+                func, 
+                self.components, 
+                self.verbose
+            )
             
-            # Create quantum implementation based on the pattern
-            if pattern_name == "matrix_multiplication":
-                self.quantum_implementations[func_id] = self._create_quantum_matrix_multiply(func)
-            elif pattern_name == "fourier_transform":
-                self.quantum_implementations[func_id] = self._create_quantum_fourier_transform(func)
-            elif pattern_name == "search_algorithm":
-                self.quantum_implementations[func_id] = self._create_quantum_search(func)
-            elif pattern_name == "optimization":
-                self.quantum_implementations[func_id] = self._create_quantum_optimization(func)
-            elif pattern_name == "sampling":
-                self.quantum_implementations[func_id] = self._create_quantum_sampling(func)
-            elif pattern_name == "machine_learning":
-                self.quantum_implementations[func_id] = self._create_quantum_machine_learning(func)
-            # Add more patterns as they are implemented
+            if quantum_func:
+                self.quantum_implementations[func_id] = quantum_func
             
+            return quantum_func
+                
         except Exception as e:
             # If there's an error in analysis, log it but don't crash
             if self.verbose:
                 print(f"Error analyzing function {func.__name__}: {e}")
                 import traceback
                 traceback.print_exc()
-
-    def _time_execution(self, func: Callable, args: tuple, kwargs: dict) -> Tuple[Any, float]:
-        """
-        Time the execution of a function.
-        
-        Args:
-            func: Function to time
-            args: Positional arguments
-            kwargs: Keyword arguments
             
-        Returns:
-            Tuple of (result, execution_time)
-        """
-        start_time = time.time()
-        try:
-            result = func(*args, **kwargs)
-            execution_time = time.time() - start_time
-            return result, execution_time
-        except Exception as e:
-            execution_time = time.time() - start_time
-            if self.verbose:
-                print(f"Error executing function: {e}")
-            raise
+            return None
 
 
 # Simplified API
